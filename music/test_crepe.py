@@ -165,5 +165,6 @@ for i, (note, start, end) in enumerate(events):
 
 midi.instruments.append(instrument)
 
+os.mkdirs("output", exist_ok=True)
 midi.write("output/output_crepe.mid")
 
