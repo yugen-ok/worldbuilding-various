@@ -4,337 +4,222 @@ import numpy as np
 import datetime
 import os
 import time
-from collections import deque
 import queue
+import math
+import crepe
+import contextlib
 import sys
+import io
 
+# ---------------- CONFIG ----------------
+
+OUTPUT_PATH = 'output/audio_log.txt'
+os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+
+CONF_THRESHOLD = 0.80
+STEP_MS = 10
+SMOOTH_FRAMES = 5
+BUFFER_SECONDS = 0.6
+
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F',
+              'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+MIN_NOTE_MS = 100          # how long a note must persist
+MIN_NOTE_FRAMES = int(MIN_NOTE_MS / STEP_MS)
+
+
+CHOICE = '6'
+
+# ---------------- HELPERS ----------------
+
+def hz_to_note(freq_hz):
+    if freq_hz <= 0:
+        return None
+    midi = round(69 + 12 * math.log2(freq_hz / 440.0))
+    name = NOTE_NAMES[midi % 12]
+    octave = midi // 12 - 1
+    return f"{name}{octave}"
+
+# ---------------- MONITOR ----------------
 
 class AudioMonitor:
-    def __init__(self, log_file="audio_log.txt"):
-        self.CHUNK = 4096
+    def __init__(self, log_file=OUTPUT_PATH):
         self.RATE = 44100
-        self.log_file = log_file
-        self.audio_queue = queue.Queue()
-        self.pitch_buffer = deque(maxlen=5)
+        self.CHUNK = 4096
 
-        # UDP output to external display
+        self.audio_queue = queue.Queue()
+        self.audio_buffer = []
+
+        self.buffer_seconds = BUFFER_SECONDS
+        self.last_emitted_note = None
+
+        self.log_file = log_file
+        open(self.log_file, 'w').close()
+
+        # UDP
         self.UDP_IP = "127.0.0.1"
         self.UDP_PORT = 5005
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        # Display lock control (simple + robust)
-        self.last_sent_pitch = None
-        self.last_sent_time = 0.0
+        self.current_note = None
+        self.current_count = 0
 
-        self.PITCH_CHANGE_CENTS = 80     # must be clearly different
-        self.MIN_SEND_INTERVAL = 0.3     # seconds
+        self.note_locked = False
 
-    def cents_diff(self, a, b):
-        return abs(1200 * np.log2(a / b))
-
+    # ---------- I/O ----------
 
     def send_pitch_udp(self, pitch):
-        """Send current pitch (Hz) to external app via UDP"""
-        if pitch is None:
-            return
         try:
-            msg = f"{pitch:.2f}"
-            self.udp_sock.sendto(msg.encode("utf-8"),
+            self.udp_sock.sendto(f"{pitch:.2f}".encode(),
                                  (self.UDP_IP, self.UDP_PORT))
         except Exception:
-            pass  # never let UI/IPC break audio
+            pass
+
+    def log_data(self, pitch, note):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"[{ts}] Pitch: {pitch:8.2f} Hz | Note: {note}\n"
+        print(line.strip())
+        with open(self.log_file, "a") as f:
+            f.write(line)
+
+    # ---------- DEVICE SELECTION ----------
 
     def list_devices(self):
-        """List all available audio devices with detailed info"""
         print("\n" + "=" * 80)
-        print("AVAILABLE AUDIO INPUT DEVICES:")
+        print("AVAILABLE AUDIO INPUT DEVICES")
         print("=" * 80)
 
         devices = sd.query_devices()
-        input_devices = []
 
-        for i, device in enumerate(devices):
-            if device['max_input_channels'] > 0:
-                hostapi = sd.query_hostapis(device['hostapi'])
-                input_devices.append(i)
+        for i, d in enumerate(devices):
+            if d['max_input_channels'] <= 0:
+                continue
 
-                # Highlight likely loopback devices
-                is_loopback = any(keyword in device['name'].lower()
-                                  for keyword in ['stereo mix', 'wave out', 'what u hear',
-                                                  'loopback', 'wasapi', 'primary sound'])
+            name = d['name'].lower()
+            is_loopback = any(
+                k in name for k in
+                ['stereo mix', 'what u hear', 'wave out',
+                 'loopback', 'wasapi', 'primary sound']
+            )
 
-                marker = " ← LOOPBACK?" if is_loopback else ""
-
-                print(f"\n[{i}] {device['name']}{marker}")
-                print(f"    Host API: {hostapi['name']}")
-                print(f"    Input Channels: {device['max_input_channels']}")
-                print(f"    Default Sample Rate: {device['default_samplerate']} Hz")
-
-        print("\n" + "=" * 80)
-        return input_devices
-
-    def test_device(self, device_id):
-        """Test if a device can be opened"""
-        try:
-            device_info = sd.query_devices(device_id)
-            channels = min(2, device_info['max_input_channels'])
-
-            # Try non-blocking callback mode for WDM-KS devices
-            def dummy_callback(indata, frames, time, status):
-                pass
-
-            with sd.InputStream(
-                    device=device_id,
-                    channels=channels,
-                    samplerate=int(device_info['default_samplerate']),
-                    blocksize=1024,
-                    callback=dummy_callback
-            ):
-                time.sleep(0.1)  # Brief test
-            return True
-        except Exception as e:
-            print(f"Cannot use device {device_id}: {e}")
-            return False
+            marker = " ← LOOPBACK?" if is_loopback else ""
+            print(f"[{i}] {d['name']}{marker}")
+            print(f"     Channels: {d['max_input_channels']}")
+            print(f"     Default SR: {d['default_samplerate']} Hz\n")
 
     def select_device(self):
-        """Interactive device selection"""
-        input_devices = self.list_devices()
+        self.list_devices()
 
-        if not input_devices:
-            print("\nERROR: No input devices found!")
-            return None
+        if CHOICE:
+            choice = CHOICE.strip()
+        else:
+            choice = input("Enter device number: ").strip()
+        return int(choice)
 
-        print("\nNOTE: To capture system audio (what's playing), you need:")
-        print("  - Windows: Enable 'Stereo Mix' in Sound Settings")
-        print("  - Look for devices marked '← LOOPBACK?' above")
-        print()
-
-        while True:
-            try:
-                choice = input("Enter device number (or 'q' to quit): ").strip()
-
-                if choice.lower() == 'q':
-                    return None
-
-                device_id = int(choice)
-
-                if device_id not in input_devices:
-                    print(f"Invalid choice. Please select from: {input_devices}")
-                    continue
-
-                # Test the device
-                print(f"\nTesting device {device_id}...")
-                if self.test_device(device_id):
-                    print(f"✓ Device {device_id} is working!")
-                    return device_id
-                else:
-                    print(f"✗ Device {device_id} cannot be opened. Try another.")
-
-            except ValueError:
-                print("Please enter a valid number.")
-            except KeyboardInterrupt:
-                print("\n\nCancelled.")
-                return None
+    # ---------- AUDIO ----------
 
     def audio_callback(self, indata, frames, time_info, status):
-        """Callback for audio stream"""
         if status:
-            print(f"Audio status: {status}")
+            print(status)
         self.audio_queue.put(indata.copy())
 
-    def get_pitch_and_frequency(self, audio_data):
-        """Extract pitch and frequency from audio data using zero-crossing"""
-        # Convert to mono if stereo
-        if len(audio_data.shape) > 1:
-            audio_data = (audio_data[:, 0] + audio_data[:, 1]) / 2.0
-
-        # Calculate RMS (volume/amplitude)
-        rms = (sum(x ** 2 for x in audio_data) / len(audio_data)) ** 0.5
-
-        # Only process if there's significant audio
-        if rms < 0.0001:
-            return None, None, 0.0
-
-        # Zero-crossing rate method for pitch
-        try:
-            # Count zero crossings
-            zero_crossings = 0
-            for i in range(1, len(audio_data)):
-                if (audio_data[i - 1] >= 0 and audio_data[i] < 0) or \
-                        (audio_data[i - 1] < 0 and audio_data[i] >= 0):
-                    zero_crossings += 1
-
-            # Estimate frequency from zero crossings
-            # Each cycle has 2 zero crossings
-            if zero_crossings > 10:
-                frequency = (zero_crossings / 2.0) * self.RATE / len(audio_data)
-
-                if 50 < frequency < 2000:  # Valid range
-                    self.pitch_buffer.append(frequency)
-                    # Simple median without numpy
-                    sorted_buffer = sorted(list(self.pitch_buffer))
-                    stable_pitch = sorted_buffer[len(sorted_buffer) // 2]
-                    return stable_pitch, self.pitch_to_note(stable_pitch), rms
-
-        except Exception as e:
-            print(f"Pitch error: {e}")
-
-        return None, None, rms
-
-    def pitch_to_note(self, frequency):
-        """Convert frequency to musical note"""
-        if frequency <= 0:
-            return "N/A"
-
-        A4 = 440.0
-        notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-
-        half_steps = 12 * np.log2(frequency / A4)
-        octave = 4 + (half_steps + 9) // 12
-        note_idx = int(round(half_steps + 9)) % 12
-
-        return f"{notes[note_idx]}{int(octave)}"
-
-    def get_dominant_frequency(self, audio_data):
-        """Get dominant frequency using simple FFT"""
-        try:
-            if len(audio_data.shape) > 1:
-                audio_data = (audio_data[:, 0] + audio_data[:, 1]) / 2.0
-
-            # Use numpy FFT - this should work
-            import numpy.fft as fft_module
-            n = len(audio_data)
-            fft_result = fft_module.fft(audio_data)
-            magnitude = [abs(x) for x in fft_result[:n // 2]]
-            freqs = [i * self.RATE / n for i in range(n // 2)]
-
-            # Find peak frequency (skip very low frequencies < 20Hz)
-            max_mag = 0
-            peak_freq = 0.0
-            for i, freq in enumerate(freqs):
-                if freq > 20 and magnitude[i] > max_mag:
-                    max_mag = magnitude[i]
-                    peak_freq = freq
-
-            return peak_freq
-        except Exception as e:
-            return 0.0
-
-    def log_data(self, pitch, note, rms, fft_peak):
-        """Write audio data to log file"""
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-        pitch_str = f"{pitch:.2f} Hz" if pitch else "N/A"
-        note_str = note if note else "N/A"
-        rms_db = 20 * np.log10(rms) if rms > 0 else -100
-
-        log_line = f"[{timestamp}] Pitch: {pitch_str:>12} | Note: {note_str:>4} | " \
-                   f"Volume: {rms_db:>6.1f} dB | Peak Freq: {fft_peak:.1f} Hz\n"
-
-        with open(self.log_file, 'a') as f:
-            f.write(log_line)
-
-        # Also print to console
-        print(log_line.strip())
+    # ---------- MAIN LOOP ----------
 
     def start_monitoring(self):
-        """Start monitoring audio output"""
-
-        self.send_pitch_udp(440.0)
-        time.sleep(1)
-        self.send_pitch_udp(440.0)
+        device_idx = self.select_device()
+        dev = sd.query_devices(device_idx)
 
         print("\n" + "=" * 80)
-        print("AUDIO MONITOR - Real-time Pitch & Frequency Logger")
+        print(f"Monitoring: {dev['name']}")
+        print(f"Sample rate: {self.RATE}")
         print("=" * 80)
+        print("Listening... (Ctrl+C to stop)\n")
 
-        device_idx = self.select_device()
+        with sd.InputStream(
+            device=device_idx,
+            channels=min(2, dev['max_input_channels']),
+            samplerate=self.RATE,
+            blocksize=self.CHUNK,
+            callback=self.audio_callback
+        ):
+            while True:
+                try:
+                    audio = self.audio_queue.get(timeout=1)
 
-        if device_idx is None:
-            print("\nExiting...")
-            return
+                    if audio.ndim > 1:
+                        audio = audio.mean(axis=1)
 
-        # Get device info
-        device_info = sd.query_devices(device_idx)
-        channels = min(2, device_info['max_input_channels'])
+                    self.audio_buffer.append(audio)
 
-        print(f"\n{'=' * 80}")
-        print(f"Monitoring: {device_info['name']}")
-        print(f"Channels: {channels}")
-        print(f"Sample Rate: {self.RATE} Hz")
-        print(f"Log file location: {os.path.abspath(self.log_file)}")
-        print(f"{'=' * 80}")
-        print("\nListening for audio... (Press Ctrl+C to stop)")
-        print("NOTE: Make some noise/play audio to see logging!")
-        print()
-
-        try:
-            # Open audio stream
-            with sd.InputStream(
-                    device=device_idx,
-                    channels=channels,
-                    samplerate=self.RATE,
-                    blocksize=self.CHUNK,
-                    callback=self.audio_callback
-            ):
-                while True:
-                    try:
-                        # Get audio data from queue
-                        audio_data = self.audio_queue.get(timeout=1)
-
-                        # Get pitch and frequency
-                        pitch, note, rms = self.get_pitch_and_frequency(audio_data)
-                        fft_peak = self.get_dominant_frequency(audio_data)
-
-                        # Log if there's ANY audio (lowered threshold)
-                        if rms > 0.0001:
-                            self.log_data(pitch, note, rms, fft_peak)
-
-                            now = time.time()
-
-                            if pitch is None:
-                                pass
-
-                            elif self.last_sent_pitch is None:
-                                # first pitch → accept immediately
-                                self.send_pitch_udp(pitch)
-                                self.last_sent_pitch = pitch
-                                self.last_sent_time = now
-
-                            elif (
-                                    self.cents_diff(pitch, self.last_sent_pitch) > self.PITCH_CHANGE_CENTS
-                                    and (now - self.last_sent_time) > self.MIN_SEND_INTERVAL
-                            ):
-                                # clearly new pitch → update
-                                self.send_pitch_udp(pitch)
-                                self.last_sent_pitch = pitch
-                                self.last_sent_time = now
-
-                        # Debug: print RMS values every 2 seconds even if quiet
-                        if not hasattr(self, '_last_debug'):
-                            self._last_debug = time.time()
-                        if time.time() - self._last_debug > 2:
-                            print(f"[DEBUG] Current RMS: {rms:.6f}")
-                            self._last_debug = time.time()
-
-                    except queue.Empty:
+                    total_samples = sum(len(x) for x in self.audio_buffer)
+                    if total_samples / self.RATE < self.buffer_seconds:
                         continue
-                    except KeyboardInterrupt:
-                        raise
 
-        except KeyboardInterrupt:
-            print("\n\n" + "=" * 80)
-            print("Monitoring stopped")
-            print("=" * 80)
-        except Exception as e:
-            print(f"\nError during monitoring: {e}")
+                    audio_np = np.concatenate(self.audio_buffer).astype(np.float32)
+                    self.audio_buffer = []
 
-        finally:
-            print(f"Log saved to: {os.path.abspath(self.log_file)}")
+                    # -------- CREPE --------
 
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        _, frequency, confidence, _ = crepe.predict(
+                            audio_np,
+                            self.RATE,
+                            step_size=STEP_MS,
+                            viterbi=False,
+                            model_capacity="small"
+                        )
+
+                    frequency[confidence < CONF_THRESHOLD] = np.nan
+
+                    kernel = np.ones(SMOOTH_FRAMES)
+                    valid = np.isfinite(frequency).astype(float)
+                    freq_filled = np.nan_to_num(frequency, nan=0.0)
+
+                    smoothed = np.convolve(freq_filled, kernel, mode="same") / \
+                               np.maximum(np.convolve(valid, kernel, mode="same"), 1e-9)
+
+                    for f in smoothed:
+                        if not np.isfinite(f) or f <= 0:
+                            continue
+
+                        note = hz_to_note(float(f))
+
+                        # reset if silence or invalid
+                        if note is None:
+                            self.current_note = None
+                            self.current_count = 0
+                            self.note_locked = False
+                            continue
+
+                        # same note → count
+                        if note == self.current_note:
+                            self.current_count += 1
+                        else:
+                            # note changed → unlock and restart count
+                            self.current_note = note
+                            self.current_count = 1
+                            self.note_locked = False
+
+                        # emit ONCE per note region
+                        if (
+                                not self.note_locked and
+                                self.current_count >= MIN_NOTE_FRAMES
+                        ):
+                            self.note_locked = True
+                            self.last_emitted_note = note
+                            self.log_data(f, note)
+                            self.send_pitch_udp(f)
+
+
+
+                except queue.Empty:
+                    continue
+                except KeyboardInterrupt:
+                    print("\nStopped.")
+                    return
+
+
+# ---------------- RUN ----------------
 
 if __name__ == "__main__":
-    # Save to Desktop for easy access
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop", "audio_output_log.txt")
-    monitor = AudioMonitor(log_file=desktop)
-    monitor.start_monitoring()
+    AudioMonitor().start_monitoring()

@@ -1,0 +1,14 @@
+**/*.log
+
+**/recycle_bin/
+**/data/
+**/output/
+**/llm_cache/
+**/.idea/
+**/__pycache__
+**/lbgpt_cache/
+
+**/*_env/
+
+notes.txt
+.env
