@@ -1,0 +1,39 @@
+{
+  "name": "Naive Fixed-Time Controller",
+  "description": "Poor parameters - fixed long cycles, slow response",
+
+  "simulation": {
+    "sumo_config": "simulation.sumocfg",
+    "duration_seconds": 600,
+    "use_gui": false
+  },
+
+  "logging": {
+    "log_directory": "logs",
+    "log_interval_seconds": 10,
+    "save_vehicle_details": true
+  },
+
+  "controller": {
+    "min_green_time_seconds": 45,
+    "max_green_time_seconds": 90,
+    "yellow_time_seconds": 3,
+    "queue_threshold_vehicles": 20,
+    "waiting_time_threshold_seconds": 120
+  },
+
+  "objective": {
+    "description": "Minimize average waiting time and queue length",
+    "formula": "avg_waiting_time + (avg_queue_length * 2)",
+    "queue_weight": 2.0
+  },
+
+  "notes": {
+    "why_naive": [
+      "Long min_green_time (45s) means slow response to changing traffic",
+      "Very high queue_threshold (20) allows massive queues before switching",
+      "High waiting_time_threshold (120s) tolerates excessive delays",
+      "Acts more like traditional fixed-time control with poor timing"
+    ]
+  }
+}

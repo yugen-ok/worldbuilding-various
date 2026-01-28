@@ -1,0 +1,30 @@
+{
+  "name": "Adaptive Traffic Controller",
+  "description": "Optimized parameters for responsive traffic light control",
+
+  "simulation": {
+    "sumo_config": "simulation.sumocfg",
+    "duration_seconds": 600,
+    "use_gui": false
+  },
+
+  "logging": {
+    "log_directory": "logs",
+    "log_interval_seconds": 10,
+    "save_vehicle_details": true
+  },
+
+  "controller": {
+    "min_green_time_seconds": 10,
+    "max_green_time_seconds": 60,
+    "yellow_time_seconds": 3,
+    "queue_threshold_vehicles": 5,
+    "waiting_time_threshold_seconds": 30
+  },
+
+  "objective": {
+    "description": "Minimize average waiting time and queue length",
+    "formula": "avg_waiting_time + (avg_queue_length * 2)",
+    "queue_weight": 2.0
+  }
+}
