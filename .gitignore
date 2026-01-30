@@ -1,4 +1,5 @@
 **/*.log
+**/logs/
 
 **/recycle_bin/
 **/data/
@@ -9,6 +10,8 @@
 **/lbgpt_cache/
 
 **/*_env/
+
+**/network/
 
 notes.txt
 .env

@@ -6,7 +6,7 @@ Traffic Light Controller with JSON Configuration
 A simple adaptive traffic light controller that loads parameters from JSON config files.
 
 Usage:
-    python traffic_controller_configurable.py [config_file.json]
+    python controller.py [config_file.json]
 
 If no config file specified, defaults to configs/adaptive_config.json
 """
@@ -16,6 +16,8 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
+
+USE_GUI = True
 
 # Add SUMO tools to path
 if 'SUMO_HOME' in os.environ:
@@ -48,9 +50,9 @@ class Config:
 
         # Extract values with defaults
         sim = config_data.get("simulation", {})
-        self.SUMO_CFG = sim.get("sumo_config", "simulation.sumocfg")
+        self.SUMO_CFG = sim.get("sumo_config", "configs/simulation.sumocfg")
         self.SIMULATION_STEPS = sim.get("duration_seconds", 600)
-        self.USE_GUI = sim.get("use_gui", False)
+        self.USE_GUI = USE_GUI
 
         log = config_data.get("logging", {})
         self.LOG_DIR = Path(log.get("log_directory", "logs"))

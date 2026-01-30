@@ -45,7 +45,7 @@ call C:\Users\Yugen\gdrive\workspace\.venv\Scripts\activate.bat
 echo.
 echo Starting simulation with config: %CONFIG%
 cd /d "%~dp0"
-python traffic_controller_configurable.py %CONFIG%
+python controller.py %CONFIG%
 
 echo.
 echo ============================================================
@@ -69,7 +69,7 @@ cd /d "%~dp0"
 echo.
 echo [1/2] Running ADAPTIVE configuration...
 echo --------------------------------------------------------
-python traffic_controller_configurable.py configs\adaptive_config.json > temp_adaptive.txt
+python controller.py configs\adaptive_config.json > temp_adaptive.txt
 type temp_adaptive.txt | findstr /C:"Objective value"
 set ADAPTIVE_OBJ=
 for /f "tokens=3" %%a in ('type temp_adaptive.txt ^| findstr /C:"Objective value"') do set ADAPTIVE_OBJ=%%a
@@ -77,7 +77,7 @@ for /f "tokens=3" %%a in ('type temp_adaptive.txt ^| findstr /C:"Objective value
 echo.
 echo [2/2] Running NAIVE configuration...
 echo --------------------------------------------------------
-python traffic_controller_configurable.py configs\naive_config.json > temp_naive.txt
+python controller.py configs\naive_config.json > temp_naive.txt
 type temp_naive.txt | findstr /C:"Objective value"
 set NAIVE_OBJ=
 for /f "tokens=3" %%a in ('type temp_naive.txt ^| findstr /C:"Objective value"') do set NAIVE_OBJ=%%a

@@ -3,9 +3,8 @@
   "description": "Optimized parameters for responsive traffic light control",
 
   "simulation": {
-    "sumo_config": "simulation.sumocfg",
-    "duration_seconds": 600,
-    "use_gui": false
+    "sumo_config": "configs/simulation.sumocfg",
+    "duration_seconds": 600
   },
 
   "logging": {

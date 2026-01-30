@@ -10,27 +10,36 @@ import crepe
 import contextlib
 import sys
 import io
+from scipy import signal
+
 
 # ---------------- CONFIG ----------------
 
 OUTPUT_PATH = 'output/audio_log.txt'
 os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 
-CONF_THRESHOLD = 0.80
+
+# For complex music detection
 STEP_MS = 10
-SMOOTH_FRAMES = 5
-BUFFER_SECONDS = 0.6
+CONF_THRESHOLD = 0.50  # Lower threshold (was 0.80)
+BUFFER_SECONDS = .25    # Longer analysis window (was 0.6)
+SMOOTH_FRAMES = 10      # More smoothing (was 5)
+MIN_NOTE_MS = 40       # Slightly longer to filter rapid fluctuations
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F',
               'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-MIN_NOTE_MS = 100          # how long a note must persist
 MIN_NOTE_FRAMES = int(MIN_NOTE_MS / STEP_MS)
 
 
 CHOICE = '6'
 
 # ---------------- HELPERS ----------------
+
+def preprocess_audio(audio_np, rate):
+    # High-pass filter at 80 Hz to remove bass rumble
+    sos = signal.butter(4, 80, 'hp', fs=rate, output='sos')
+    return signal.sosfilt(sos, audio_np)
 
 def hz_to_note(freq_hz):
     if freq_hz <= 0:
@@ -156,6 +165,7 @@ class AudioMonitor:
                         continue
 
                     audio_np = np.concatenate(self.audio_buffer).astype(np.float32)
+                    audio_np = preprocess_audio(audio_np, self.RATE)
                     self.audio_buffer = []
 
                     # -------- CREPE --------
@@ -165,7 +175,7 @@ class AudioMonitor:
                             audio_np,
                             self.RATE,
                             step_size=STEP_MS,
-                            viterbi=False,
+                            viterbi=True,
                             model_capacity="small"
                         )
 
