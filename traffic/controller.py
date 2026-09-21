@@ -10,14 +10,14 @@ Usage:
 
 If no config file specified, defaults to configs/adaptive_config.json
 """
-
+import argparse
 import sys
 import os
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
-USE_GUI = True
 
 # Add SUMO tools to path
 if 'SUMO_HOME' in os.environ:
@@ -35,7 +35,7 @@ import traci
 class Config:
     """Simulation and controller configuration loaded from JSON"""
 
-    def __init__(self, config_path="configs/adaptive_config.json"):
+    def __init__(self, args, config_path="configs/adaptive_config.json"):
         """Load configuration from JSON file"""
         self.config_path = Path(config_path)
 
@@ -52,7 +52,8 @@ class Config:
         sim = config_data.get("simulation", {})
         self.SUMO_CFG = sim.get("sumo_config", "configs/simulation.sumocfg")
         self.SIMULATION_STEPS = sim.get("duration_seconds", 600)
-        self.USE_GUI = USE_GUI
+        self.USE_GUI = args.use_gui
+        self.DELAY = args.delay  # Simulation speed control (milliseconds per step)
 
         log = config_data.get("logging", {})
         self.LOG_DIR = Path(log.get("log_directory", "logs"))
@@ -352,8 +353,12 @@ def run_simulation(config):
     sumo_cmd = [sumo_binary, "-c", config.SUMO_CFG]
     if config.USE_GUI:
         sumo_cmd.extend(["--start", "--quit-on-end"])
+        if config.DELAY > 0:
+            sumo_cmd.extend(["--delay", str(config.DELAY)])
 
     print(f"Starting SUMO ({'GUI' if config.USE_GUI else 'headless'})...")
+    if config.DELAY > 0:
+        print(f"  Delay: {config.DELAY}ms per step")
 
     # Clean any existing connection
     if traci.isLoaded():
@@ -410,6 +415,10 @@ def run_simulation(config):
 
             last_log_time = sim_time
 
+        # Apply delay for headless mode (GUI mode uses --delay flag)
+        if not config.USE_GUI and config.DELAY > 0:
+            time.sleep(config.DELAY / 1000.0)  # Convert milliseconds to seconds
+
     # Final metrics
     final_metrics = metrics.calculate()
 
@@ -439,17 +448,30 @@ def run_simulation(config):
 
 if __name__ == "__main__":
     # Get config file from command line or use default
-    if len(sys.argv) > 1:
-        config_file = sys.argv[1]
-    else:
-        config_file = "configs/adaptive_config.json"
+    parser = argparse.ArgumentParser()
+    parser.add_argument('config_file', nargs='?', default='configs/adaptive_config.json',
+                        help='Path to JSON configuration file')
+    parser.add_argument('--use-gui', '-g', action='store_true', help='Use SUMO GUI instead of headless mode')
+    parser.add_argument('--duration', '-d', type=int, default=None,
+                        help='Simulation duration in seconds (overrides config file)')
+    parser.add_argument('--delay', '-s', type=int, default=0,
+                        help='Delay between simulation steps in milliseconds (0=max speed, 100=human watchable, 1000=slow)')
+    args = parser.parse_args()
 
     try:
         # Load configuration
-        config = Config(config_file)
+        config = Config(args, args.config_file)
 
+        # Override duration if specified on command line
+        if args.duration is not None:
+            config.SIMULATION_STEPS = args.duration
+            print(f"[OVERRIDE] Duration set to {args.duration} seconds via command line")
+
+        start_time = datetime.now()
         # Run simulation
         result = run_simulation(config)
+        end_time = datetime.now()
+        print(f"Simulation time: {(end_time - start_time).seconds} seconds")
 
         if result:
             print(f"\n{'='*60}")

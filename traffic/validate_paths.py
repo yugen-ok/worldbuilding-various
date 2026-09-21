@@ -47,7 +47,7 @@ def validate_paths():
         tree = ET.parse(sumo_cfg_path)
         root = tree.getroot()
 
-        # Check network file
+        # Check scenarios file
         net_file = root.find(".//net-file")
         if net_file is not None:
             net_path_str = net_file.get("value")
@@ -73,14 +73,14 @@ def validate_paths():
             else:
                 print(f"  [OK] Route file exists: {route_path}")
 
-    # Check network directory
-    print(f"\n[3] Checking network directory...")
-    network_dir = Path("network")
+    # Check scenarios directory
+    print(f"\n[3] Checking scenarios directory...")
+    network_dir = Path("scenarios")
     if not network_dir.exists():
-        errors.append("  [X] network/ directory not found")
+        errors.append("  [X] scenarios/ directory not found")
     else:
-        print(f"  [OK] network/ directory exists")
-        xml_files = ["network.nod.xml", "network.edg.xml", "network.net.xml", "routes.rou.xml"]
+        print(f"  [OK] scenarios/ directory exists")
+        xml_files = ["scenarios.nod.xml", "scenarios.edg.xml", "scenarios.net.xml", "routes.rou.xml"]
         for xml_file in xml_files:
             xml_path = network_dir / xml_file
             if not xml_path.exists():
